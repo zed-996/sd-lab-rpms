@@ -25,7 +25,15 @@ function apiRequest(method,url,body,options={}){
   if(xhr.status>=500)return {ok:false,code:result.code||'ERROR',message:result.message||'The server could not complete the request.'};
   return result;
 }
-function apiCommand(command,payload){return apiRequest('POST','/commands/'+encodeURIComponent(command),payload);}
+function apiCommand(command,payload){
+  const response=apiRequest('POST','/commands/'+encodeURIComponent(command),payload);
+  // Command consumers use the same result shape as the domain services
+  // ({ok, id}, {ok, proposal}, etc.). The HTTP endpoint wraps that result
+  // alongside the refreshed state, so unwrap it after apiRequest applies
+  // the state update.
+  if(!response.ok||!response.result||typeof response.result!=='object')return response;
+  return {...response.result,state:response.state};
+}
 
 Auth.login=(email,password)=>apiRequest('POST','/auth/login',{email,password});
 Auth.register=data=>apiRequest('POST','/auth/register',data);

@@ -72,6 +72,34 @@ test('new account row is saved before its foreign-key-backed session is inserted
   assert.equal('afterSave' in outcome,false);
 });
 
+test('API proposal draft result exposes its ID to the following submit command',()=>{
+  const calls=[];
+  const responses=[
+    {ok:true,result:{ok:true,id:'PROP-2026-999'},state:{proposals:[{id:'PROP-2026-999',status:'Draft'}]}},
+    {ok:true,result:{ok:true,proposal:{id:'PROP-2026-999',status:'Under Review'}},state:{proposals:[{id:'PROP-2026-999',status:'Under Review'}]}},
+  ];
+  class MockXHR{
+    open(method,url,async){this.method=method;this.url=url;this.async=async;}
+    setRequestHeader(){}
+    send(body){calls.push({method:this.method,url:this.url,async:this.async,body:JSON.parse(body)});this.status=200;this.responseText=JSON.stringify(responses.shift());}
+  }
+  const serviceNames=['ProjectAccess','ProjectService','ProposalService','MilestoneService','DeliverableService','FundingService','AdminService'];
+  const context={
+    window:{location:{protocol:'http:'}},sessionStorage:{getItem:()=> 'session-token',setItem(){},removeItem(){}},
+    XMLHttpRequest:MockXHR,DB:{},Auth:{},
+    ...Object.fromEntries(serviceNames.map(name=>[name,{}])),
+  };
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../js/api-client.js'),'utf8'),context,{filename:'js/api-client.js'});
+  const saved=context.ProposalService.saveDraft(validProposal(),{id:'USR-PI',role:'PI'});
+  assert.equal(saved.ok,true);assert.equal(saved.id,'PROP-2026-999');
+  const submitted=context.ProposalService.submit(saved.id,{id:'USR-PI',role:'PI'});
+  assert.equal(submitted.ok,true);
+  assert.deepEqual(calls.map(call=>call.url),['/api/commands/proposal.saveDraft','/api/commands/proposal.submit']);
+  assert.equal(calls[1].body.id,'PROP-2026-999');
+  assert.equal(submitted.proposal.id,'PROP-2026-999');
+});
+
 test('multipart parser preserves binary file bytes and removes path components',()=>{
   const boundary='rpms-test-boundary';
   const body=Buffer.concat([
