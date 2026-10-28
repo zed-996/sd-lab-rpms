@@ -9,7 +9,7 @@ const {createDomain}=require('../server/domain');
 const repository=require('../server/repository');
 const {createToken,verifyToken}=require('../server/security');
 const {statements}=require('../server/migrate');
-const {handler,parseMultipart,filteredState,reportRows,csv}=require('../server/index');
+const {handler,parseMultipart,filteredState,reportRows,csv,commitOutcome}=require('../server/index');
 
 function freshDomain(){return createDomain(path.resolve(__dirname,'..'));}
 function validProposal(overrides={}){
@@ -61,6 +61,15 @@ test('MySQL DATE and DATETIME values round-trip when returned as Date objects',(
   assert.equal(repository.isoDate(date),'2026-10-28');
   assert.equal(repository.isoDateTime(date),'2026-10-28 16:08:29');
   assert.equal(repository.isoDateTime('2026-10-28 16:08:29'),'2026-10-28 16:08:29');
+});
+
+test('new account row is saved before its foreign-key-backed session is inserted',async()=>{
+  const events=[],conn={commit:async()=>events.push('commit')};
+  const outcome={state:{users:[{id:'USR-NEW'}]},afterSave:async(_conn,result)=>{events.push(`session:${result.state.users[0].id}`);result.token='test-token';}};
+  await commitOutcome(conn,outcome,{},async(_conn,state)=>events.push(`user:${state.users[0].id}`));
+  assert.deepEqual(events,['user:USR-NEW','session:USR-NEW','commit']);
+  assert.equal(outcome.token,'test-token');
+  assert.equal('afterSave' in outcome,false);
 });
 
 test('multipart parser preserves binary file bytes and removes path components',()=>{

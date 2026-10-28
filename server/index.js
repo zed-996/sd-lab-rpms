@@ -111,11 +111,20 @@ async function withWrite(user,work){
     const previous=await repository.loadState(conn);
     const outcome=await work(conn,previous);
     if(outcome?.error){await conn.rollback();return outcome;}
-    if(outcome?.state&&!outcome.persisted)await repository.saveState(conn,outcome.state,previous);
-    await conn.commit();
+    await commitOutcome(conn,outcome,previous);
     return outcome;
   }catch(error){try{await conn.rollback();}catch{}throw error;}
   finally{if(locked)try{await conn.query("SELECT RELEASE_LOCK('rpms-mutation')");}catch{}conn.release();}
+}
+
+async function commitOutcome(conn,outcome,previous,saveState=repository.saveState){
+  if(outcome?.state&&!outcome.persisted)await saveState(conn,outcome.state,previous);
+  if(typeof outcome?.afterSave==='function'){
+    const afterSave=outcome.afterSave;
+    delete outcome.afterSave;
+    await afterSave(conn,outcome);
+  }
+  await conn.commit();
 }
 
 function statusForResult(result){
@@ -145,8 +154,7 @@ async function handleRegister(req,res){
     if(!result.result.ok)return {error:{status:statusForResult(result.result),result:result.result}};
     const user=result.state.users.find(x=>x.id===result.result.user.id);
     user.passwordHash=await repository.hashPassword(data.password);
-    const token=await issueSession(conn,user.id);
-    return {token,user,state:result.state,persisted:false};
+    return {user,state:result.state,afterSave:async(sessionConn,registered)=>{registered.token=await issueSession(sessionConn,user.id);}};
   });
   if(outcome.error)return sendJson(res,outcome.error.status,{ok:false,...outcome.error.result});
   return sendJson(res,201,{ok:true,token:outcome.token,user:{id:outcome.user.id,name:outcome.user.name,email:outcome.user.email,role:outcome.user.role,dept:outcome.user.dept,active:true},state:filteredState(outcome.state,outcome.user)});
@@ -396,4 +404,4 @@ async function start(){
 }
 if(require.main===module)start().catch(error=>{console.error(`RPMS startup failed: ${error.message}`);process.exitCode=1;});
 
-module.exports={handler,parseMultipart,filteredState,reportRows,csv};
+module.exports={handler,parseMultipart,filteredState,reportRows,csv,commitOutcome};
