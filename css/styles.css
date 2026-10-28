@@ -26,12 +26,20 @@ code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
 .navlink:hover{background:rgba(255,255,255,.14);color:#fff}
 .navlink.active{background:#fff;color:var(--navy);font-weight:600}
 .top-right{margin-left:auto;display:flex;align-items:center;gap:12px}
-.bell{position:relative;display:inline-flex;align-items:center;justify-content:center;color:#fff;text-decoration:none;line-height:1;padding:6px 7px;border-radius:8px}
-.bell svg{display:block}
+.bell{position:relative;color:#fff;text-decoration:none;line-height:1;padding:6px 7px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;overflow:hidden}
+.bell-icon{display:block;width:24px;height:24px;max-width:24px;max-height:24px;object-fit:contain;flex:none}
 .bell:hover{background:rgba(255,255,255,.14)}
 .badge{position:absolute;top:-4px;right:-6px;background:#e53935;color:#fff;border-radius:999px;font-size:10.5px;padding:1px 5px;font-weight:700;border:2px solid #1f4e79}
 .userchip{font-size:12.5px;white-space:nowrap;background:rgba(255,255,255,.14);padding:6px 13px;border-radius:999px}
 .userchip .role{opacity:.85}
+@media (max-width:700px){
+  .brand-sub{display:none}
+  .topbar-inner{gap:8px}
+  .nav{width:100%;flex:0 0 100%;gap:3px}
+  .navlink{padding:6px 9px}
+  .top-right{width:100%;flex:0 0 100%;margin-left:0;gap:8px;justify-content:space-between;min-width:0}
+  .userchip{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:right;padding:6px 9px}
+}
 
 /* ---------- Layout ---------- */
 .container{max-width:1120px;margin:0 auto;padding:22px 16px 44px}
@@ -45,6 +53,10 @@ code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
 .mt{margin-top:22px}
 .empty{color:var(--muted);font-style:italic;font-size:13px;padding:8px 2px;margin:6px 0}
 .quiet{color:var(--muted);font-size:12.5px}
+.hidden{display:none!important}
+.inline-access{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:10px 0}
+.inline-access .field{flex:1;min-width:220px;margin:4px 0}
+.notif-link{display:inline-block;margin-left:8px;font-size:12px;font-weight:600}
 .footer{text-align:center;color:var(--muted);font-size:12px;padding:18px 10px 30px}
 
 /* ---------- Stats ---------- */
@@ -123,13 +135,10 @@ table.tbl{width:100%;border-collapse:collapse;background:#fff;font-size:13.5px}
 .demo-creds{margin-top:16px;font-size:12.5px;color:var(--muted);line-height:2}
 .demo-creds button{margin:2px 4px 2px 0;padding:3px 10px;font-size:12px;border-radius:999px;border:1px solid var(--border);background:#f6f8fb;cursor:pointer}
 .demo-creds button:hover{background:var(--blue-bg)}
-.label-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
-.quiet-link{font-size:12.5px;color:var(--navy)}
-.mail-preview{margin-top:12px;border:1px dashed #b9c6d6;border-radius:8px;background:#f7f9fb;padding:12px 14px}
-.mail-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border)}
-.mail-meta{font-size:12.5px;color:#4c5f73;background:#fff;border:1px solid var(--border);border-radius:6px;padding:7px 9px}
-.mail-link{word-break:break-all;font-size:12.5px}
-.mail-preview .btn{margin-top:2px}
+.inline-access{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:12px}
+.inline-access .field{min-width:min(380px,100%);margin:0;flex:1}
+.access-list{list-style:none;padding:0;margin:10px 0}
+.access-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #edf0f4}
 
 /* ---------- Notifications ---------- */
 ul.notif{list-style:none;margin:0;padding:0}

@@ -8,7 +8,6 @@
 const DB_KEY = 'rpms_db_v1';
 const SESSION_KEY = 'rpms_session_v1';
 const SESSION_TTL_MS = 30 * 60 * 1000; // NFR-008: 30-minute sliding session
-const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // single-use password reset link lifetime
 const DEMO_PASSWORD = 'demo123';
 
 /* ---------- small helpers ---------- */
@@ -47,17 +46,6 @@ function findMilestone(id){ return DB.milestones.find(m => m.id === id); }
 function userById(id){ return DB.users.find(u => u.id === id) || { name:'Unknown', role:'?' }; }
 function usersByRole(role){ return DB.users.filter(u => u.role === role && u.active); }
 
-/* ---------- project access (BR-024, NFR-007, NFR-022) ---------- */
-// A PI may only see projects they lead or are assigned to; all other roles are
-// authorised reviewers/coordinators/administrators with institution-wide scope.
-function canViewProject(user, proj){
-  if(!user || !proj) return false;
-  if(user.role !== 'PI') return true;
-  const members = proj.investigators || [];
-  return proj.pi === user.id || members.some(m => (m.userId || m.id || m) === user.id);
-}
-function visibleProjects(user){ return DB.projects.filter(p => canViewProject(user, p)); }
-
 /* ---------- seed data (matches the wireframe scenario) ---------- */
 function seedDB(){
   const t = todayISO();
@@ -73,10 +61,10 @@ function seedDB(){
       { id:'USR-301', name:'Dr. Suresh Nair',  email:'dst.rep@serb.gov.in',       role:'FUNDING',     dept:'DST - SERB',         active:true },
       { id:'USR-401', name:'Ms. Rekha Iyer',   email:'auditor@lnmiit.ac.in',      role:'AUDITOR',     dept:'Internal Audit',     active:true },
     ],
-    fundingSources:['DST - SERB','AICTE','Ministry of Power','Siemens R&D Grant'],
+    fundingSources:['DST-SERB','AICTE','Ministry of Power','Siemens R&D Grant','Other','Self-funded'],
     proposals:[
       { id:'PROP-2026-042', title:'AI-based Crop Disease Detection', pi:'USR-101', domain:'AI/ML',
-        fundingSource:'DST - SERB', budget:null,
+        fundingSource:'DST-SERB', budget:null,
         abstract:'A deep learning approach to early detection of crop diseases from low-cost smartphone imagery, targeting smallholder farms in Rajasthan.',
         objectives:'Develop a CNN-based classifier for 12 major crop diseases; deploy an on-device inference app; validate accuracy with 2 agricultural universities.',
         methodology:'', expectedOutcomes:'',
@@ -108,7 +96,7 @@ function seedDB(){
         documents:[ {id:'DOC-103', type:'Proposal', name:'wearable_health_proposal.pdf', size:'1.8 MB', version:1, uploadedBy:'USR-102', uploadDate:'2026-09-20'} ],
         review:null },
       { id:'PROP-2026-047', title:'Low-cost Water Quality Sensors', pi:'USR-104', domain:'Environment',
-        fundingSource:'DST - SERB', budget:600000,
+        fundingSource:'DST-SERB', budget:600000,
         abstract:'An IoT sensor node suite for continuous water quality monitoring of urban lakes.',
         objectives:'Develop pH/turbidity/TDS nodes; deploy across 5 lakes; open-source the data pipeline.',
         methodology:'Calibration against lab-grade instruments; solar-powered nodes; LoRaWAN backhaul.',
@@ -119,7 +107,7 @@ function seedDB(){
         documents:[ {id:'DOC-104', type:'Proposal', name:'water_quality_proposal.pdf', size:'2.1 MB', version:1, uploadedBy:'USR-104', uploadDate:'2026-09-22'} ],
         review:null },
       { id:'PROP-2026-031', title:'Smart Grid Load Analytics', pi:'USR-101', domain:'Energy',
-        fundingSource:'DST - SERB', budget:2400000,
+        fundingSource:'DST-SERB', budget:2400000,
         abstract:'ML-based short-term load forecasting for the campus smart grid to reduce peak demand charges.',
         objectives:'Forecast hourly load 24h ahead with <5% MAPE; integrate with campus SCADA.',
         methodology:'LSTM + transformer ensembles trained on 3 years of smart-meter data.',
@@ -146,7 +134,7 @@ function seedDB(){
     projects:[
       { id:'PRJ-2026-015', proposalId:'PROP-2026-031', title:'Smart Grid Load Analytics', pi:'USR-101', domain:'Energy',
         status:'Active', startDate:'2026-09-05', expectedEndDate:'2027-08-31', actualEndDate:null, activationDate:'2026-09-02',
-        funding:{ source:'DST - SERB', sanctioned:2400000, received:1200000, utilized:2040000 },
+        team:[], funding:{ source:'DST-SERB', proposedBudget:2400000, sanctioned:2400000, received:1200000, utilized:2040000 },
         disbursements:[ {amount:1200000, date:'2026-09-10', recordedBy:'USR-301'} ],
         utilizations:[
           {category:'Equipment',  description:'GPU server for model training', amount:1200000, date:'2026-09-20', recordedBy:'USR-103'},
@@ -182,7 +170,6 @@ function seedDB(){
       { id:'NOTF-5015', recipient:'USR-205', type:'review',   message:'New proposal PROP-2026-043 (Soil Moisture Sensing Network) submitted for review.', created:'2026-09-12T09:16', read:false },
       { id:'NOTF-5016', recipient:'USR-101', type:'approval', message:'Proposal PROP-2026-031 (Smart Grid Load Analytics) was approved. Project PRJ-2026-015 activated.', created:'2026-09-02T12:05', read:true },
     ],
-    passwordResets:[],
     auditLog:[
       { id:'LOG-8001', actor:'USR-101', action:'PROPOSAL_SUBMITTED',           target:'PROP-2026-031', time:'2026-08-20T10:00', remarks:'Proposal submitted for committee review' },
       { id:'LOG-8002', actor:'USR-205', action:'PROPOSAL_APPROVED',            target:'PROP-2026-031', time:'2026-09-02T12:00', remarks:'Approved with funding confirmation' },
@@ -190,26 +177,36 @@ function seedDB(){
       { id:'LOG-8004', actor:'USR-103', action:'FUNDING_UTILIZATION_RECORDED', target:'PRJ-2026-015',  time:'2026-10-24T17:00', remarks:'Manpower: ₹8,40,000 — RA stipends (Sep–Oct)' },
       { id:'LOG-8005', actor:'USR-102', action:'PROPOSAL_SUBMITTED',           target:'PROP-2026-044', time:'2026-09-20T11:05', remarks:'Proposal submitted for committee review' },
     ],
-    counters:{ prop:48, prj:16, ms:304, dlv:34, doc:205, notf:5017, log:8006, usr:501, rst:1 },
+    counters:{ prop:48, prj:16, ms:304, dlv:34, doc:205, notf:5017, log:8006, usr:501, disb:1, util:1 },
   };
 }
 
 /* ---------- persistence ---------- */
-function saveDB(){ localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
+function saveDB(){ if(typeof window==='undefined'||!window.RPMS_API_MODE) localStorage.setItem(DB_KEY, JSON.stringify(DB)); }
 function loadDB(){
   try{
     const raw = localStorage.getItem(DB_KEY);
     if(raw){
       const db = JSON.parse(raw);
       if(db && db.meta){
-        // merge in counters/collections added by newer versions
-        db.counters = Object.assign({ usr:501, rst:1 }, db.counters);
-        if(!Array.isArray(db.passwordResets)) db.passwordResets = [];
+        // Normalize records as the local prototype schema evolves.
+        db.counters = Object.assign({ usr:501 }, db.counters);
+        db.counters.disb = db.counters.disb || 1; db.counters.util = db.counters.util || 1;
+        db.proposals = db.proposals || [];
+        db.fundingSources = ['DST-SERB','AICTE','Ministry of Power','Siemens R&D Grant','Other','Self-funded'];
+        db.proposals.forEach(p=>{if(p.fundingSource==='DST - SERB')p.fundingSource='DST-SERB';});
+        db.projects = db.projects || [];
+        db.projects.forEach(p => { p.team = p.team || (p.authorizedPIs || []).map(userId => ({userId, access:'View Only'})); if(p.funding){if(p.funding.source==='DST - SERB')p.funding.source='DST-SERB';p.funding.proposedBudget=p.funding.proposedBudget??p.funding.sanctioned??0;} });
+        db.milestones = db.milestones || [];
+        db.milestones.forEach(m => { m.deliverables = m.deliverables || []; });
+        db.documents = db.documents || [];
+        db.notifications = db.notifications || [];
+        db.auditLog = db.auditLog || [];
         return db;
       }
     }
   }catch(e){ /* fall through to reseed */ }
-  const db = seedDB(); localStorage.setItem(DB_KEY, JSON.stringify(db)); return db;
+  const db = seedDB(); if(typeof window==='undefined'||!window.RPMS_API_MODE) localStorage.setItem(DB_KEY, JSON.stringify(db)); return db;
 }
 function resetDB(){
   localStorage.removeItem(DB_KEY);
@@ -229,6 +226,5 @@ function nextId(kind){
     case 'notf': return `NOTF-${c.notf++}`;
     case 'log':  return `LOG-${c.log++}`;
     case 'usr':  return `USR-${c.usr++}`;
-    case 'rst':  return `RST-${c.rst++}`;
   }
 }

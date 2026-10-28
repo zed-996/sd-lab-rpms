@@ -1,106 +1,61 @@
-# RPMS — Research Project Management System (Working Prototype)
+# RPMS — Research Project Management System
 
-A working front-end prototype of the **Research Project Management System** specified in the Team T081 SRS
-(CS314 Software Development Laboratory, LNMIIT Jaipur). It implements the three detailed use cases from the
-design documents — **UC-004 Submit Proposal, UC-005 Approve/Reject Proposal, UC-011 Submit Milestone
-Completion** — plus role-based access for all six user classes, funding management, notifications, self-service
-password reset, and an append-only audit log. The UI follows the Assignment 7 wireframes (navy header, cards,
-status pills) with a few usability improvements.
+The existing vanilla JavaScript application now runs against a Node.js API and MySQL. The current page layout and styling are retained. MySQL is the durable source of record for accounts, proposals, projects, team access, milestones, deliverables, funding, documents, notifications, reviews and audit history.
 
-## Run it
+## Run locally
 
-No build step and no backend needed — it is a static single-page app.
+Requirements: Node.js 20 or later and MySQL 8.0.16 or later. The MySQL account needs permission to create the database, tables and triggers during the first migration. On this development Mac, MySQL 8.4 is installed through Homebrew; start it with the service command below.
 
-**Option A:** double-click `index.html` (works straight from disk).
-
-**Option B (recommended):** serve it and open in a browser:
-
-```bash
-cd rpms-prototype
-python -m http.server 8080
-# then open http://localhost:8080
+```sh
+npm install
+brew services start mysql@8.4
+export RPMS_DB_HOST=127.0.0.1
+export RPMS_DB_PORT=3306
+export RPMS_DB_NAME=rpms
+export RPMS_DB_USER=root
+npm run db:migrate
+npm start
 ```
 
-All data lives in your browser's `localStorage`. Use **“Reset demo data”** on the login page to reseed.
+If your local MySQL root account has a password, set `RPMS_DB_PASSWORD` before migration and startup. Homebrew may keep the service running after login; run the service command again if MySQL is stopped.
 
-## Demo accounts
+Open <http://127.0.0.1:8080>. The server also applies the idempotent schema and seeds demonstration accounts on first startup if the database has no users. All six demonstration accounts use `demo123` on a newly seeded database. Uploaded files are stored in `server/uploads/`; keep that folder with the database backups.
 
-Password for **every** account: `demo123`
+For production, set `NODE_ENV=production`, use a dedicated MySQL account and password, set `RPMS_JWT_SECRET` to at least 32 random characters, and serve the app behind HTTPS. Enable database TLS with `RPMS_DB_SSL=1` when supported by the MySQL endpoint. The server binds to `127.0.0.1` by default. Do not use the demonstration accounts in production.
 
-| Role                            | Email                          | Sees |
-|---------------------------------|--------------------------------|------|
-| Principal Investigator          | priya.sharma@lnmiit.ac.in      | PI Dashboard, proposals, milestones, alerts |
-| Research Committee Approver     | rajesh.gupta@lnmiit.ac.in      | Review queue, proposal & milestone decisions |
-| Research Coordinator            | kavita.rao@lnmiit.ac.in        | Funding utilization recording |
-| Funding Agency Representative   | dst.rep@serb.gov.in            | Disbursements, sanction confirmation |
-| System Administrator            | admin@lnmiit.ac.in             | Users & roles, audit log |
-| Institutional Auditor           | auditor@lnmiit.ac.in           | Read-only audit trail |
+## Existing demo accounts
 
-The login page has one-click buttons that pre-fill each persona.
+| Role | Email |
+|---|---|
+| Principal Investigator | `priya.sharma@lnmiit.ac.in` |
+| Research Committee Approver | `rajesh.gupta@lnmiit.ac.in` |
+| Research Coordinator | `kavita.rao@lnmiit.ac.in` |
+| Funding Agency Representative | `dst.rep@serb.gov.in` |
+| System Administrator | `admin@lnmiit.ac.in` |
+| Institutional Auditor | `auditor@lnmiit.ac.in` |
 
-## Suggested demo walkthrough
+## What is implemented
 
-0. **Registration:** click **“Create an account”** on the login page → register with any email not already
-   in the demo list (e.g. `rakesh.verma@lnmiit.ac.in`) and a password (≥ 6 chars) → the account joins as a
-   **Principal Investigator** and you are signed straight into the PI dashboard. Duplicate emails are
-   rejected; admins receive a notification and a `USER_REGISTERED` audit entry is written. Seeded demo
-   accounts keep working with `demo123`. **Roles are admin-assigned per FR-004/BR-019**: use Admin →
-   Users → *Create User* (UC-002) to provision coordinators, approvers, funding-agency reps or auditors.
-1. **UC-004 (PI):** sign in as Dr. Sharma → the draft *PROP-2026-042 “AI-based Crop Disease Detection”*
-   is intentionally incomplete → **Submit** shows the M-07 “Missing fields” banner with inline field errors.
-   Fill Methodology, Budget and the dates → **Submit Proposal** → confirmation page (status *Under Review*,
-   timestamp, committee notified).
-2. **UC-005 (Approver):** sign in as Prof. Gupta → the new proposal appears in the **Review Queue**.
-   Try **Reject** with no comments → BR-006 blocks it. Reject with comments, or **Approve**:
-   - checkbox *“Funding sanction confirmed”* **checked** → project created **Active** (BR-007);
-   - left **unchecked** → project created **Pending Funding**; sign in as the Funding Agency rep and press
-     **Confirm Funding Sanction** to activate it (UC-005 alt flow b).
-3. **UC-011 (PI):** back as Dr. Sharma → milestone *M2 Prototype model* (Smart Grid Load Analytics, due in
-   7 days) → **Submit completion** without evidence → FR-018 blocks it. Add evidence, submit → status
-   *Submitted for Review*.
-4. **UC-012 (Approver):** approve the milestone (→ *Completed*) or request revision (→ back to *In Progress*
-   with comments, AC-20).
-5. **Coordinator:** record fund utilization on Smart Grid Load Analytics (already at 85% — FR-025 budget
-   alerts are visible on the cards and the PI dashboard).
-6. **Admin:** change a role / deactivate an account (BR-019/020), then check the **Audit Log** — every major
-   action (logins, submissions, decisions, funding entries) is recorded append-only (BR-023, NFR-024/025).
-7. **Session expiry (NFR-008):** sessions expire after 30 minutes of inactivity; the login page shows the
-   M-03 “session expired” message.
-8. **Forgot password:** on the login page click **Forgot password?** → enter a demo email (e.g.
-   `priya.sharma@lnmiit.ac.in`) → the prototype displays the simulated email containing a single-use reset
-   link (30-minute expiry) → choose a new password (≥ 6 characters) → sign in with it. Unknown or
-   deactivated accounts receive the same generic response, so account existence is not disclosed. Both
-   steps are written to the Audit Log (`PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET`).
+- Server-backed login, logout, registration, role checks, 30-minute sliding sessions, hashed password storage and single-use password reset tokens.
+- PI proposal drafts and submissions, plus coordinator-assisted draft preparation; source selection, custom “Other” funding, supporting file uploads, and a dated milestone plan that becomes the project plan after approval.
+- PI-managed project membership with View Only and Contributor access, and a designated PI retained on each project.
+- Milestone status and evidence submissions, approver decisions, deliverables, deadline notifications and project lifecycle changes.
+- Multiple project funding sources with separate authorization caps and sanction totals, disbursements, utilization entries, balance summaries and budget alerts.
+- Project and proposal document upload, category, version history and permission-checked download. Uploaded file contents live on the server filesystem; their metadata and associations live in MySQL.
+- Role-filtered notifications, project/funding reports, CSV export and append-only review and audit records.
+- MySQL schema and seed migration in `server/schema.sql`, persistence mapping in `server/repository.js`, API and request authorization in `server/index.js`, and domain operations reused from `js/services.js`.
 
-## Requirements coverage (highlights)
+## Tests and traceability
 
-| Area | Where |
-|------|-------|
-| FR-001…FR-004 auth, RBAC, role change | `js/services.js` (`Auth`, `AdminService`), per-route role guards |
-| Self-service password reset (FR-001/FR-002 pattern, NFR-005/024, BR-020) | `Auth.requestPasswordReset`, `Auth.checkResetToken`, `Auth.resetPassword`, forgot/reset views |
-| FR-005…FR-012 proposal lifecycle incl. draft, withdraw | `ProposalService`, PI dashboard + editor |
-| FR-013…FR-015 project listing/search/filter/details | *Projects* page, project detail |
-| FR-016…FR-021 milestones & deliverables | `MilestoneService`, milestone views |
-| FR-022…FR-025 funding allocation/utilization/alerts | `FundingService`, *Funding* page |
-| FR-026…FR-028 documents + version tracking | evidence upload, project documents table |
-| FR-029…FR-031 notifications | notification bell + page, generated by services |
-| FR-032/033 dashboards & reports | role-specific dashboards, funding summaries |
-| BR-001…BR-024 business rules | enforced inside services; rejected actions show the wireframe error messages (M-01…M-19) |
-| NFR-004/005/006/008 auth & session | simulated JWT-style session, 30-min sliding expiry, generic login errors |
-| NFR-024/025 auditability | append-only `auditLog`, no UI to edit it |
+Run `npm test` for the available automated checks. The complete requirement mapping, implementation locations, verification status and known limitations are in [`docs/requirements-traceability.md`](docs/requirements-traceability.md).
 
-## Prototype limitations (by design)
+For the full setup walkthrough, architecture overview, demo accounts and user workflows, see [`docs/project-explanation.md`](docs/project-explanation.md).
 
-- There is **no real server** — the browser store simulates the RPMS database; refresh-safe but local.
-- Uploaded **file payloads are not persisted**; only metadata (name, size, version) is recorded.
-- All demo accounts share the password `demo123`; passwords are **not cryptographically hashed** — registered
-  accounts store a simulated digest only (NFR-005 is modelled, not implemented).
-- **Self-registration always joins as Principal Investigator.** The SRS has no self-service registration —
-  accounts are institutionally provisioned (Section 8) and roles are assigned only by administrators
-  (FR-004, BR-019). The prototype keeps PI self-signup as a documented convenience; every other role is
-  created by an admin via Users → Create User (UC-002).
-- **Password reset email is simulated.** There is no mail server, so the *Forgot password* flow displays the
-  one-time link on screen as a simulated email. Only a simulated digest of the token is stored; links expire
-  after 30 minutes, work once, and are superseded by any newer request.
-- Concurrent-edit conflicts (UC-005 alt flow c) are detected server-side in a real system; here the same
-  state checks exist but concurrency is simulated single-user.
+## Current limitations
+
+- Local MySQL 8.4 is installed; schema migration and the PI login/session/project/milestone reads have been verified against it. Start MySQL with `brew services start mysql@8.4` before using the app. The full feature set, document upload/download path, permission matrix, failure rollback and load behavior still need broader integration tests.
+- Records stored in an older browser's local storage are not automatically imported into MySQL.
+- SMTP delivery is a “Could Have” in the SRS and is not configured. In-app notifications work; the prototype password recovery flow returns a reset link to the requester instead of emailing it.
+- External funding authority is recorded by an authorized RPMS coordinator or funding representative; there is no external agency verification integration or payment gateway.
+- The current repository adapter loads and writes the application state inside a serialized transaction. That keeps this prototype consistent but needs targeted database queries before a high-volume deployment.
+- Availability targets, browser matrix coverage and mobile layout behavior need deployment-level verification.

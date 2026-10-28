@@ -6,21 +6,22 @@
 const NAV = {
   PI:          [['#/dashboard','Dashboard'],['#/projects','Projects'],['#/notifications','Notifications']],
   APPROVER:    [['#/review','Review Queue'],['#/projects','Projects'],['#/notifications','Notifications']],
-  COORDINATOR: [['#/funding','Funding'],['#/projects','Projects'],['#/notifications','Notifications']],
-  FUNDING:     [['#/funding','Funding'],['#/projects','Projects'],['#/notifications','Notifications']],
-  ADMIN:       [['#/dashboard','Dashboard'],['#/users','Users'],['#/audit','Audit Log'],['#/projects','Projects'],['#/notifications','Notifications']],
-  AUDITOR:     [['#/audit','Audit Log'],['#/projects','Projects'],['#/notifications','Notifications']],
+  COORDINATOR: [['#/proposal-assistance','Proposal Drafts'],['#/funding','Funding'],['#/projects','Projects'],['#/reports','Reports'],['#/notifications','Notifications']],
+  FUNDING:     [['#/funding','Funding'],['#/projects','Projects'],['#/reports','Reports'],['#/notifications','Notifications']],
+  ADMIN:       [['#/dashboard','Dashboard'],['#/users','Users'],['#/audit','Audit Log'],['#/projects','Projects'],['#/reports','Reports'],['#/notifications','Notifications']],
+  AUDITOR:     [['#/audit','Audit Log'],['#/projects','Projects'],['#/reports','Reports'],['#/notifications','Notifications']],
 };
 
 const ROUTES = [
   { re:/^#\/login$/,               fn:(m,u)=>viewLogin(),                              pub:true },
   { re:/^#\/register$/,            fn:()=>viewRegister(),                              pub:true },
-  { re:/^#\/forgot-password$/,     fn:()=>viewForgotPassword(),                        pub:true },
-  { re:/^#\/reset\/([A-Za-z0-9_-]+)$/, fn:(token)=>viewResetPassword(token),            pub:true },
+  { re:/^#\/forgot-password$/,     fn:()=>viewForgotPassword(),                         pub:true },
+  { re:/^#\/(?:reset-password|reset)\/([\w-]+)$/, fn:(token)=>viewResetPassword(token), pub:true },
   { re:/^#\/dashboard$/,           fn:viewDashboard },
   { re:/^#\/projects$/,            fn:viewProjects },
   { re:/^#\/project\/([\w-]+)$/,   fn:viewProject },
   { re:/^#\/proposal\/new$/,       fn:(m,u)=>viewProposal('new',u) },
+  { re:/^#\/proposal-assistance$/, fn:viewProposalAssistance },
   { re:/^#\/proposal\/([\w-]+)$/,  fn:viewProposal },
   { re:/^#\/confirm\/([\w-]+)$/,   fn:(id)=>viewConfirm(id) },
   { re:/^#\/review$/,              fn:viewReviewQueue },
@@ -28,6 +29,7 @@ const ROUTES = [
   { re:/^#\/milestones$/,          fn:viewReviewQueue },
   { re:/^#\/milestone\/([\w-]+)$/, fn:viewMilestone },
   { re:/^#\/funding$/,             fn:viewFunding },
+  { re:/^#\/reports$/,             fn:viewReports },
   { re:/^#\/users$/,               fn:viewUsers },
   { re:/^#\/audit$/,               fn:viewAudit },
   { re:/^#\/notifications$/,       fn:viewNotifications },
@@ -48,7 +50,9 @@ function renderTopbar(u){
     <a class="brand" href="#/dashboard"><span class="logo-mark">R</span> RPMS <span class="brand-sub">— Research Project Management System</span></a>
     <nav class="nav">${nav}</nav>
     <div class="top-right">
-      <a class="bell" href="#/notifications" title="Notifications" aria-label="Notifications"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4a1.5 1.5 0 0 0-3 0v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>${unread?`<span class="badge">${unread}</span>`:''}</a>
+      <a class="bell" href="#/notifications" title="Notifications" aria-label="Notifications${unread ? `, ${unread} unread` : ''}">
+        <img class="bell-icon" src="notification-svgrepo-com.svg?v=24" width="24" height="24" alt="" aria-hidden="true">
+        ${unread?`<span class="badge">${unread}</span>`:''}</a>
       <span class="userchip">${esc(u.name)} <span class="role">(${ROLE_LABEL[u.role]})</span></span>
       <button class="btn btn-light btn-sm" id="btn-logout">Logout</button>
     </div></div>`;
@@ -69,6 +73,7 @@ function router(){
     viewLogin({ expired:true });
     return;
   }
+  if(session) refreshDeadlineNotifications();
   const route = ROUTES.find(r => r.re.test(hash));
   if(!route){
     location.hash = session ? '#/dashboard' : '#/login';

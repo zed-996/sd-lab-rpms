@@ -9,6 +9,11 @@
 function err(code, message, fields) {
   return { ok: false, code, message, fields };
 }
+function validISODate(value){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(value||''))) return false;
+  const d=new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(d.getTime()) && d.toISOString().slice(0,10)===value;
+}
 
 function audit(actorId, action, target, remarks) {
   DB.auditLog.unshift({
@@ -20,15 +25,39 @@ function audit(actorId, action, target, remarks) {
     remarks,
   });
 }
-function notify(recipientId, type, message) {
+function notify(recipientId, type, message, href) {
   DB.notifications.unshift({
     id: nextId("notf"),
     recipient: recipientId,
     type,
     message,
+    href: href || '',
     created: nowISO(),
     read: false,
   });
+}
+function notifyFundingStakeholders(project, actorId, message){
+  const team=(project.team||[]).filter(member=>member.access!=='View Only').map(member=>member.userId);
+  const viewOnly=new Set((project.team||[]).filter(member=>member.access==='View Only').map(member=>member.userId));
+  const coordinators=usersByRole('COORDINATOR').filter(user=>user.active&&!viewOnly.has(user.id)).map(user=>user.id);
+  const recipients=[project.pi,...team,...coordinators,actorId]
+    .filter((id,index,all)=>id&&all.indexOf(id)===index);
+  recipients.forEach(id=>notify(id,'funding',message,`#/project/${project.id}`));
+}
+function refreshDeadlineNotifications(){
+  let changed=false;
+  DB.milestones.filter(m=>['In Progress','Not Started','Pending'].includes(m.status)).forEach(m=>{
+    const project=findProject(m.projectId); if(!project || !['Active','Pending Funding'].includes(project.status)) return;
+    const days=daysBetween(todayISO(),m.targetDate); if(days>7) return;
+    const key=`milestone-deadline:${m.id}:${todayISO()}`;
+    const recipients=[project.pi,...(project.team||[]).map(x=>x.userId),...usersByRole('COORDINATOR').filter(u=>u.active).map(u=>u.id)];
+    recipients.filter((id,i,all)=>all.indexOf(id)===i).forEach(id=>{
+      if(DB.notifications.some(n=>n.recipient===id&&n.key===key)) return;
+      const msg=days<0?`Milestone ${m.code} (${m.name}) of ${project.title} is overdue by ${-days} day(s).`:`Milestone ${m.code} (${m.name}) of ${project.title} is due in ${days} day(s).`;
+      notify(id,'deadline',msg,`#/milestone/${m.id}`); DB.notifications[0].key=key; changed=true;
+    });
+  });
+  if(changed) saveDB();
 }
 
 /* Simulated password digest (NFR-005): deterministic obfuscation — NOT real crypto, prototype only. */
@@ -140,6 +169,38 @@ const Auth = {
     saveDB();
     return { ok: true, user };
   },
+
+  requestPasswordReset(email) {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized))
+      return err('UNPROCESSABLE', 'Enter a valid email address.');
+    const user = DB.users.find(u => u.email.toLowerCase() === normalized && u.active);
+    if (!user) return { ok:true, token:null };
+    DB.passwordResets = DB.passwordResets || [];
+    const token = 'reset-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    DB.passwordResets = DB.passwordResets.filter(r => r.userId !== user.id);
+    DB.passwordResets.push({ token, userId:user.id, expiresAt:Date.now() + 15 * 60 * 1000 });
+    saveDB();
+    return { ok:true, token };
+  },
+  passwordResetIsValid(token) {
+    DB.passwordResets = DB.passwordResets || [];
+    return DB.passwordResets.some(r => r.token === token && r.expiresAt > Date.now() &&
+      DB.users.some(u => u.id === r.userId && u.active));
+  },
+  resetPassword(token, password) {
+    password = String(password || '');
+    if (password.length < 6) return err('UNPROCESSABLE', 'Password must be at least 6 characters long.');
+    DB.passwordResets = DB.passwordResets || [];
+    const reset = DB.passwordResets.find(r => r.token === token && r.expiresAt > Date.now());
+    const user = reset && DB.users.find(u => u.id === reset.userId && u.active);
+    if (!user) return err('UNAUTHORIZED', 'This password reset link is invalid or has expired.');
+    user.passwordHash = fakeHash(password);
+    DB.passwordResets = DB.passwordResets.filter(r => r.token !== token && r.userId !== user.id);
+    audit(user.id, 'PASSWORD_RESET', user.id, 'Password changed using a reset link');
+    saveDB();
+    return { ok:true };
+  },
   /* Returns a user, null, or {expired:true} when the session timed out. */
   current() {
     try {
@@ -151,7 +212,9 @@ const Auth = {
       }
       s.expiresAt = Date.now() + SESSION_TTL_MS; // sliding expiry
       localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-      return DB.users.find((u) => u.id === s.userId) || null;
+      const user=DB.users.find((u) => u.id === s.userId) || null;
+      if(!user || !user.active){localStorage.removeItem(SESSION_KEY);return null;}
+      return user;
     } catch (e) {
       return null;
     }
@@ -266,6 +329,93 @@ const Auth = {
   },
 };
 
+/* ---------- PI project visibility and owner-managed authorization ---------- */
+function canViewProject(project, user){
+  if(!project || !user || !user.active) return false;
+  if(project.pi === user.id) return true;
+  if((project.team || []).some(m => m.userId === user.id)) return true;
+  // Research office and oversight roles retain their SRS-wide read access.
+  return ['COORDINATOR','APPROVER','ADMIN','AUDITOR','FUNDING'].includes(user.role);
+}
+function projectAccess(project,user){
+  if(!project || !user) return null;
+  if(project.pi===user.id) return 'Owner';
+  const member=(project.team||[]).find(m=>m.userId===user.id);
+  return member ? member.access : null;
+}
+function canContributeProject(project,user){
+  if(!canViewProject(project,user)) return false;
+  if(project.pi===user.id) return true;
+  const member=(project.team||[]).find(m=>m.userId===user.id);
+  if(member) return member.access==='Contributor';
+  return ['COORDINATOR','ADMIN'].includes(user.role);
+}
+function hasViewOnlyMembership(project,user){
+  const member=(project&&project.team||[]).find(m=>m.userId===user.id);
+  return !!member && member.access==='View Only';
+}
+const ProjectAccess = {
+  grant(projectId, owner, userId, access){
+    const project = findProject(projectId);
+    if(!project) return err('NOT_FOUND','Project not found.');
+    if(!owner.active || owner.role !== 'PI' || project.pi !== owner.id)
+      return err('FORBIDDEN','Only the project PI can authorize access.');
+    const member = DB.users.find(u => u.id === userId && u.active);
+    if(!member) return err('UNPROCESSABLE','Select an active registered user.');
+    if(member.id === project.pi) return err('CONFLICT','The designated PI already has project access.');
+    if(!['View Only','Contributor'].includes(access)) return err('UNPROCESSABLE','Choose View Only or Contributor access.');
+    project.team = project.team || [];
+    if(project.team.some(m => m.userId === member.id)) return err('CONFLICT','This user is already on the project team.');
+    project.team.push({userId:member.id, access, addedBy:owner.id, addedAt:nowISO()});
+    audit(owner.id,'PROJECT_ACCESS_GRANTED',project.id,`${member.email} added as ${access}`);
+    notify(member.id,'project',`You have ${access.toLowerCase()} access to ${project.title} (${project.id}).`,`#/project/${project.id}`);
+    saveDB();
+    return {ok:true};
+  },
+  update(projectId, owner, userId, access){
+    const project=findProject(projectId);
+    if(!project) return err('NOT_FOUND','Project not found.');
+    if(!owner.active || owner.role!=='PI' || project.pi!==owner.id) return err('FORBIDDEN','Only the project PI can manage access.');
+    if(!['View Only','Contributor'].includes(access)) return err('UNPROCESSABLE','Choose View Only or Contributor access.');
+    const member=(project.team||[]).find(m=>m.userId===userId);
+    if(!member) return err('NOT_FOUND','Project team member not found.');
+    member.access=access; member.updatedAt=nowISO();
+    audit(owner.id,'PROJECT_ACCESS_CHANGED',project.id,`${userById(userId).email} access changed to ${access}`);
+    saveDB(); return {ok:true};
+  },
+  revoke(projectId, owner, userId){
+    const project = findProject(projectId);
+    if(!project) return err('NOT_FOUND','Project not found.');
+    if(!owner.active || owner.role !== 'PI' || project.pi !== owner.id)
+      return err('FORBIDDEN','Only the project PI can manage access.');
+    if(userId===project.pi) return err('CONFLICT','The designated PI cannot be removed.');
+    project.team = project.team || [];
+    if(!project.team.some(m=>m.userId===userId)) return err('NOT_FOUND','Project team member not found.');
+    project.team = project.team.filter(m => m.userId !== userId);
+    audit(owner.id,'PROJECT_ACCESS_REVOKED',project.id,`Access revoked from ${userById(userId).email}`);
+    saveDB();
+    return {ok:true};
+  }
+};
+
+const ProjectService = {
+  updateStatus(projectId, caller, nextStatus, reason){
+    const project=findProject(projectId);if(!project)return err('NOT_FOUND','Project not found.');
+    if(hasViewOnlyMembership(project,caller))return err('FORBIDDEN','View Only project access cannot change project status.');
+    if(!caller.active||!['PI','COORDINATOR','ADMIN'].includes(caller.role))return err('FORBIDDEN','Your role cannot change project status.');
+    if(caller.role==='PI'&&project.pi!==caller.id)return err('FORBIDDEN','Only the project PI can change its status.');
+    const allowed={Active:['On Hold','Completed','Terminated'],'On Hold':['Active','Terminated'],'Pending Funding':[]};
+    if(!(allowed[project.status]||[]).includes(nextStatus))return err('CONFLICT',`Project status cannot change from ${project.status} to ${nextStatus}.`);
+    if(['Completed','Terminated','On Hold'].includes(nextStatus)&&!String(reason||'').trim())return err('UNPROCESSABLE','Enter a reason for this project status change.');
+    if(nextStatus==='Completed'&&DB.milestones.some(m=>m.projectId===project.id&&m.status!=='Completed'))return err('CONFLICT','Complete all milestones before completing the project.');
+    const previous=project.status;project.status=nextStatus;
+    if(nextStatus==='Completed')project.actualEndDate=todayISO();
+    audit(caller.id,'PROJECT_STATUS_CHANGED',project.id,`${previous} → ${nextStatus}: ${String(reason||'').trim()}`);
+    [project.pi,...(project.team||[]).map(m=>m.userId),...usersByRole('COORDINATOR').filter(u=>u.active).map(u=>u.id)].filter((id,i,a)=>a.indexOf(id)===i).forEach(id=>notify(id,'project',`Project ${project.title} (${project.id}) changed from ${previous} to ${nextStatus}.`,`#/project/${project.id}`));
+    saveDB();return {ok:true,project};
+  }
+};
+
 /* ---------- Proposal Management (UC-003/004/005/006) ---------- */
 const ProposalService = {
   validate(p) {
@@ -276,6 +426,9 @@ const ProposalService = {
       ["objectives", "Objectives"],
       ["methodology", "Methodology"],
       ["expectedOutcomes", "Expected outcomes"],
+      ["domain", "Research domain"],
+      ["fundingSource", "Funding source"],
+      ["expectedMilestones", "Expected milestones"],
       ["budget", "Budget (INR)"],
       ["startDate", "Proposed start date"],
       ["endDate", "Expected end date"],
@@ -298,16 +451,29 @@ const ProposalService = {
     ) {
       missing.push("Expected end date must be after the start date");
     }
+    if(p.fundingSource==='Other' && !String(p.fundingSourceOther||'').trim()) missing.push('Custom funding source');
+    if(!DB.fundingSources.includes(p.fundingSource)) missing.push('Funding source');
+    if(!missing.includes('Proposed start date') && !validISODate(p.startDate)) missing.push('Proposed start date');
+    if(!missing.includes('Expected end date') && !validISODate(p.endDate)) missing.push('Expected end date');
+    if(Array.isArray(p.milestonePlan)){
+      const named=p.milestonePlan.filter(m=>String(m.name||'').trim());
+      if(named.length!==p.milestonePlan.length) missing.push('Every milestone must have a title');
+      named.forEach(m=>{
+        if(!validISODate(m.targetDate)) missing.push(`Target date for milestone ${String(m.name).trim()}`);
+        else if(validISODate(p.startDate)&&m.targetDate<p.startDate) missing.push(`Target date for milestone ${String(m.name).trim()} must be on or after project start`);
+      });
+    }
     return { ok: missing.length === 0, missing };
   },
 
   saveDraft(data, caller, existingId) {
     // FR-005…FR-007, BR-001
+    if(!caller||!caller.active||!['PI','COORDINATOR'].includes(caller.role)) return err('FORBIDDEN','Only a Principal Investigator or Research Coordinator can prepare proposal drafts.');
     let p;
     if (existingId) {
       p = findProposal(existingId);
       if (!p) return err("NOT_FOUND", "Proposal not found.");
-      if (p.pi !== caller.id)
+      if (caller.role==='PI'&&p.pi !== caller.id)
         return err(
           "FORBIDDEN",
           "Access denied: only the owning PI can edit this draft.",
@@ -315,9 +481,12 @@ const ProposalService = {
       if (p.status !== "Draft")
         return err("CONFLICT", "Only drafts can be edited.");
     } else {
+      const piId=caller.role==='PI'?caller.id:String(data?.principalInvestigatorId||'');
+      const principalInvestigator=DB.users.find(user=>user.id===piId&&user.role==='PI'&&user.active);
+      if(!principalInvestigator)return err('UNPROCESSABLE','Select an active Principal Investigator for this draft.');
       p = {
         id: nextId("prop"),
-        pi: caller.id,
+        pi: principalInvestigator.id,
         status: "Draft",
         submissionDate: null,
         version: 1,
@@ -325,9 +494,11 @@ const ProposalService = {
         review: null,
       };
       DB.proposals.push(p);
-      audit(caller.id, "PROPOSAL_CREATED", p.id, "New proposal draft created");
+      audit(caller.id, "PROPOSAL_CREATED", p.id,caller.role==='PI'?"New proposal draft created":`Research Coordinator prepared a draft for ${principalInvestigator.name}`);
     }
-    Object.assign(p, data, { lastUpdated: nowISO() });
+    const editable = ['title','abstract','objectives','methodology','expectedOutcomes','budget','domain','fundingSource','fundingSourceOther','startDate','endDate','expectedMilestones','milestonePlan','expectedDeliverables','investigatorDetails'];
+    const clean = Object.fromEntries(editable.filter(key => Object.hasOwn(data||{},key)).map(key => [key, data[key]]));
+    Object.assign(p, clean, { lastUpdated: nowISO() });
     if (p.budget === "") p.budget = null;
     saveDB();
     return { ok: true, id: p.id };
@@ -335,6 +506,7 @@ const ProposalService = {
 
   submit(id, caller) {
     // UC-004, FR-008
+    if(!caller||caller.role!=='PI') return err('FORBIDDEN','Only a Principal Investigator can submit a proposal.');
     const p = findProposal(id);
     if (!p) return err("NOT_FOUND", "Proposal not found.");
     if (p.pi !== caller.id)
@@ -356,6 +528,7 @@ const ProposalService = {
     p.status = "Under Review";
     p.submissionDate = nowISO();
     p.lastUpdated = nowISO();
+    p.review = null;
     audit(
       caller.id,
       "PROPOSAL_SUBMITTED",
@@ -366,7 +539,7 @@ const ProposalService = {
       notify(
         a.id,
         "review",
-        `New proposal ${p.id} (${p.title}) submitted for review.`,
+        `New proposal ${p.id} (${p.title}) submitted for review.`, `#/review/${p.id}`,
       ),
     ); // UC-004 step 9
     saveDB();
@@ -375,7 +548,7 @@ const ProposalService = {
 
   decide(id, approver, decision, comments, fundingConfirmed) {
     // UC-005, FR-009…FR-011
-    if (approver.role !== "APPROVER")
+    if (!['APPROVER','ADMIN'].includes(approver.role))
       return err("FORBIDDEN", "Forbidden: your role cannot approve proposals."); // FR-004
     const p = findProposal(id);
     if (!p) return err("NOT_FOUND", "Proposal not found.");
@@ -403,10 +576,22 @@ const ProposalService = {
       notify(
         p.pi,
         "decision",
-        `Proposal ${p.id} (${p.title}) was rejected. Reviewer comments: ${comments}`,
+        `Proposal ${p.id} (${p.title}) was rejected. Reviewer comments: ${comments}`, `#/proposal/${p.id}`,
       ); // FR-029
       saveDB();
       return { ok: true, proposal: p };
+    }
+
+    if (decision === "Revision Required") {
+      if (!comments) return err("UNPROCESSABLE", "Revision request requires comments.");
+      p.status = "Draft";
+      p.submissionDate = null;
+      p.lastUpdated = nowISO();
+      p.review = { decision:"Revision Required", reviewer:approver.id, reviewDate:nowISO(), comments };
+      audit(approver.id, "PROPOSAL_REVISION_REQUESTED", p.id, comments);
+      notify(p.pi, "revision", `Revisions were requested for proposal ${p.id} (${p.title}): ${comments}`, `#/proposal/${p.id}`);
+      saveDB();
+      return { ok:true, proposal:p };
     }
 
     if (decision === "Approved") {
@@ -427,30 +612,18 @@ const ProposalService = {
           : "Approved; funding confirmation pending",
       );
       let project;
-      if (fundingConfirmed) {
-        project = createProject(p, "Active"); // FR-011, BR-007
-        notify(
-          p.pi,
-          "decision",
-          `Proposal ${p.id} (${p.title}) was approved. Project ${project.id} is now Active.`,
-        ); // FR-029
-      } else {
-        // UC-005 alt flow b — deferred activation
-        project = createProject(p, "Pending Funding");
-        notify(
-          p.pi,
-          "decision",
-          `Proposal ${p.id} (${p.title}) was approved. Project activation is deferred until the funding agency confirms the sanction.`,
-        );
-      }
+      // The committee decision never substitutes for a funding-agency allocation.
+      project = createProject(p, "Pending Funding");
+      notify(p.pi,"decision",`Proposal ${p.id} (${p.title}) was approved. Project ${project.id} is awaiting a funding allocation.`,`#/project/${project.id}`);
       saveDB();
-      return { ok: true, proposal: p, project, deferred: !fundingConfirmed };
+      return { ok: true, proposal: p, project, deferred: true };
     }
     return err("BAD_REQUEST", "Unknown decision.");
   },
 
   withdraw(id, caller) {
     // UC-006, FR-012
+    if(!caller||caller.role!=='PI') return err('FORBIDDEN','Only a Principal Investigator can withdraw a proposal.');
     const p = findProposal(id);
     if (!p) return err("NOT_FOUND", "Proposal not found.");
     if (p.pi !== caller.id)
@@ -484,15 +657,17 @@ function createProject(p, status) {
     proposalId: p.id,
     title: p.title,
     pi: p.pi,
+    team: [],
     domain: p.domain,
     status,
-    startDate: todayISO(),
-    expectedEndDate: addMonthsISO(todayISO(), 12),
+    startDate: p.startDate || todayISO(),
+    expectedEndDate: p.endDate || addMonthsISO(todayISO(), 12),
     actualEndDate: null,
-    activationDate: todayISO(),
+    activationDate: status === "Active" ? todayISO() : null,
     funding: {
-      source: p.fundingSource,
-      sanctioned: p.budget || 0,
+      source: p.fundingSource==='Other' ? p.fundingSourceOther : p.fundingSource,
+      proposedBudget: p.budget || 0,
+      sanctioned: 0,
       received: 0,
       utilized: 0,
     },
@@ -504,20 +679,24 @@ function createProject(p, status) {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  names.forEach((nm, i) => {
+  const planned=Array.isArray(p.milestonePlan)&&p.milestonePlan.length?p.milestonePlan:names.map((name,i)=>({name,targetDate:addMonthsISO(proj.startDate,3*(i+1)),description:'',expectedDeliverables:''}));
+  planned.forEach((plan, i) => {
+    const nm=String(plan.name||names[i]||'').trim();
     const name = nm.replace(/^M\d+[:.\-\s]+/i, "") || nm; // strip a leading code so it isn't doubled
-    DB.milestones.push({
+    const milestone={
       id: nextId("ms"),
       projectId: proj.id,
       code: "M" + (i + 1),
       name,
-      description: "",
-      targetDate: addMonthsISO(proj.startDate, 3 * (i + 1)),
+      description: String(plan.description||''),
+      targetDate: plan.targetDate||addMonthsISO(proj.startDate,3*(i+1)),
       status: "Not Started",
       completionDate: null,
       remarks: "",
       deliverables: [],
-    });
+    };
+    DB.milestones.push(milestone);
+    String(plan.expectedDeliverables||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(deliverableName=>milestone.deliverables.push({id:nextId('dlv'),projectId:proj.id,milestoneId:milestone.id,name:deliverableName,type:'Expected deliverable',description:'',dueDate:milestone.targetDate,submissionDate:'',status:'Pending',submittedBy:null,remarks:''}));
   });
   audit(
     p.pi,
@@ -548,10 +727,10 @@ const MilestoneService = {
     const m = findMilestone(id);
     if (!m) return err("NOT_FOUND", "Milestone not found.");
     const proj = findProject(m.projectId);
-    if (proj.pi !== caller.id)
+    if (!canContributeProject(proj,caller))
       return err(
         "FORBIDDEN",
-        "Access denied: only the project PI can submit this milestone.",
+        "Access denied: project contributors or the Research Coordinator can submit this milestone.",
       ); // BR-016, BR-024
     if (proj.status !== "Active")
       return err("CONFLICT", "Blocked: project is On Hold or Completed.");
@@ -581,6 +760,7 @@ const MilestoneService = {
     m.status = "Submitted for Review";
     if (remarks) m.remarks = remarks;
     m.submittedAt = nowISO();
+    m.completionReview={status:'Submitted for Review',submittedAt:m.submittedAt,submittedBy:caller.id,outcome:'Pending'};
     audit(
       caller.id,
       "MILESTONE_SUBMITTED",
@@ -591,11 +771,22 @@ const MilestoneService = {
       notify(
         a.id,
         "review",
-        `Milestone ${m.code} (${m.name}) of ${proj.title} submitted for completion review.`,
+        `Milestone ${m.code} (${m.name}) of ${proj.title} submitted for completion review.`, `#/milestone/${m.id}`,
       ),
     ); // FR-030
     saveDB();
     return { ok: true };
+  },
+
+  updateStatus(id, caller, status){
+    const m=findMilestone(id); if(!m) return err('NOT_FOUND','Milestone not found.');
+    const proj=findProject(m.projectId);
+    if(!canContributeProject(proj,caller) || (!['PI','COORDINATOR'].includes(caller.role)&&projectAccess(proj,caller)!=='Contributor')) return err('FORBIDDEN','You do not have permission to update milestone progress.');
+    if(['On Hold','Completed'].includes(proj.status)) return err('CONFLICT','Milestones cannot be changed while the project is On Hold or Completed.');
+    if(!['Pending','Not Started','In Progress'].includes(status)) return err('UNPROCESSABLE','Choose Pending or In Progress. Completion requires review.');
+    if(m.status==='Submitted for Review') return err('CONFLICT','This milestone is awaiting committee review.');
+    m.status=status==='Pending'?'Not Started':status;
+    audit(caller.id,'MILESTONE_STATUS_CHANGED',m.id,`Status changed to ${m.status}`); saveDB(); return {ok:true};
   },
 
   decide(id, approver, decision, comments) {
@@ -608,6 +799,9 @@ const MilestoneService = {
     const m = findMilestone(id);
     if (!m) return err("NOT_FOUND", "Milestone not found.");
     const proj = findProject(m.projectId);
+    if(!canViewProject(proj,approver)) return err('FORBIDDEN','You cannot review this project.');
+    if(hasViewOnlyMembership(proj,approver)) return err('FORBIDDEN','View Only project access cannot review milestone completion.');
+    if(['On Hold','Completed'].includes(proj.status)) return err('CONFLICT','Milestone completion cannot be reviewed while the project is On Hold or Completed.');
     if (m.status !== "Submitted for Review")
       return err(
         "CONFLICT",
@@ -618,10 +812,11 @@ const MilestoneService = {
     if (decision === "Completed") {
       m.status = "Completed";
       m.completionDate = todayISO();
+      m.completionReview={status:'Reviewed',outcome:'Approved',reviewer:approver.id,reviewedAt:nowISO(),comments};
       if (comments) m.remarks = comments;
       m.deliverables.forEach((d) => {
-        if (d.status !== "Submitted") {
-          d.status = "Submitted";
+        if (d.status !== "Completed") {
+          d.status = "Completed";
           d.submissionDate = todayISO();
           d.submittedBy = proj.pi;
         }
@@ -635,7 +830,7 @@ const MilestoneService = {
       notify(
         proj.pi,
         "approval",
-        `Milestone ${m.code} (${m.name}) of ${proj.title} was approved and marked Completed.`,
+        `Milestone ${m.code} (${m.name}) of ${proj.title} was approved and marked Completed.`, `#/milestone/${m.id}`,
       );
     } else if (decision === "Revision Required") {
       if (!comments)
@@ -645,11 +840,12 @@ const MilestoneService = {
         ); // AC-20
       m.status = "In Progress";
       m.remarks = comments;
+      m.completionReview={status:'Reviewed',outcome:'Revision Required',reviewer:approver.id,reviewedAt:nowISO(),comments};
       audit(approver.id, "MILESTONE_REVISION_REQUESTED", m.id, comments);
       notify(
         proj.pi,
         "revision",
-        `Revision requested for milestone ${m.code} (${m.name}) of ${proj.title}: ${comments}`,
+        `Revision requested for milestone ${m.code} (${m.name}) of ${proj.title}: ${comments}`, `#/milestone/${m.id}`,
       );
     } else {
       return err("BAD_REQUEST", "Unknown decision.");
@@ -659,8 +855,53 @@ const MilestoneService = {
   },
 };
 
+const DeliverableService = {
+  add(milestoneId, caller, data){
+    const m=findMilestone(milestoneId); if(!m) return err('NOT_FOUND','Milestone not found.');
+    const proj=findProject(m.projectId);
+    if(!canContributeProject(proj,caller) || (!['PI','COORDINATOR'].includes(caller.role)&&projectAccess(proj,caller)!=='Contributor')) return err('FORBIDDEN','You do not have permission to add deliverables.');
+    if(['On Hold','Completed'].includes(proj.status)) return err('CONFLICT','Deliverables cannot be changed while the project is On Hold or Completed.');
+    const name=String(data.name||'').trim(), type=String(data.type||'').trim(), dueDate=data.dueDate||'';
+    if(!name || !type) return err('UNPROCESSABLE','Enter a deliverable name and type.');
+    if(dueDate && (!validISODate(dueDate) || dueDate < proj.startDate)) return err('UNPROCESSABLE','Enter a valid due date on or after the project start date.');
+    const d={id:nextId('dlv'),projectId:proj.id,milestoneId:m.id,name,type,description:String(data.description||'').trim(),dueDate,submissionDate:'',status:'Pending',submittedBy:null,remarks:''};
+    m.deliverables.push(d); audit(caller.id,'DELIVERABLE_ADDED',d.id,`${name} added to ${m.code}`); saveDB(); return {ok:true,deliverable:d};
+  },
+  update(id, caller, data){
+    const m=DB.milestones.find(x=>x.deliverables.some(d=>d.id===id)); if(!m) return err('NOT_FOUND','Deliverable not found.');
+    const proj=findProject(m.projectId); if(!canContributeProject(proj,caller)||(!['PI','COORDINATOR'].includes(caller.role)&&projectAccess(proj,caller)!=='Contributor')) return err('FORBIDDEN','You do not have permission to update deliverables.');
+    if(['On Hold','Completed'].includes(proj.status)) return err('CONFLICT','Deliverables cannot be changed while the project is On Hold or Completed.');
+    const d=m.deliverables.find(x=>x.id===id), status=data.status||d.status;
+    if(!['Pending','In Progress','Submitted','Completed'].includes(status)) return err('UNPROCESSABLE','Invalid deliverable status.');
+    const submissionDate=data.submissionDate===undefined?d.submissionDate:data.submissionDate;
+    if(status==='Completed' && !submissionDate) return err('UNPROCESSABLE','A completion date is required for a completed deliverable.');
+    if(submissionDate && (!validISODate(submissionDate) || submissionDate < proj.startDate)) return err('UNPROCESSABLE','Enter a valid submission date on or after the project start date.');
+    const name=String(data.name??d.name).trim(), type=String(data.type??d.type).trim(), dueDate=data.dueDate===undefined?d.dueDate:data.dueDate, description=String(data.description??d.description??'').trim();
+    if(!name||!type) return err('UNPROCESSABLE','Deliverable name and type are required.');
+    if(dueDate && (!validISODate(dueDate)||dueDate<proj.startDate)) return err('UNPROCESSABLE','Enter a valid due date on or after the project start date.');
+    Object.assign(d,{name,type,description,dueDate,status,submissionDate,remarks:String(data.remarks??d.remarks??'').trim(),submittedBy:submissionDate?caller.id:d.submittedBy});
+    audit(caller.id,'DELIVERABLE_UPDATED',d.id,`Status set to ${status}`); saveDB(); return {ok:true,deliverable:d};
+  }
+};
+
 /* ---------- Funding Management (UC-013/014/018, FR-022…FR-025) ---------- */
 const FundingService = {
+  records(proj){
+    if(Array.isArray(proj.fundingRecords)&&proj.fundingRecords.length)return proj.fundingRecords;
+    if(!proj.fundingRecords)proj.fundingRecords=[];
+    if(Number(proj.funding?.sanctioned||0)>0)proj.fundingRecords.push({id:`FUND-${proj.id}`,source:proj.funding.source||'Self-funded',proposedAmount:Number(proj.funding.proposedBudget||0),authorizedAmount:Number(proj.funding.sanctioned||0),sanctioned:Number(proj.funding.sanctioned||0),received:Number(proj.funding.received||0),status:'Confirmed'});
+    return proj.fundingRecords;
+  },
+  refreshTotals(proj){
+    const records=this.records(proj);
+    proj.funding.sanctioned=records.reduce((sum,r)=>sum+Number(r.sanctioned||0),0);
+    proj.funding.received=records.reduce((sum,r)=>sum+Number(r.received||0),0);
+    proj.funding.source=records.length>1?'Multiple sources':records[0]?.source||proj.funding.source||'Self-funded';
+    proj.funding.utilized=(proj.utilizations||[]).reduce((sum,r)=>sum+Number(r.amount||0),0);
+  },
+  allocationOptions(projects){
+    return projects.flatMap(proj=>this.records(proj).map(record=>({projectId:proj.id,fundingId:record.id,projectTitle:proj.title,source:record.source,sanctioned:Number(record.sanctioned||0),received:Number(record.received||0)})));
+  },
   utilizationPct(proj) {
     return proj.funding.sanctioned > 0
       ? Math.round((proj.funding.utilized / proj.funding.sanctioned) * 100)
@@ -676,19 +917,26 @@ const FundingService = {
       );
     const proj = findProject(projectId);
     if (!proj) return err("NOT_FOUND", "Project not found.");
-    if (proj.funding.sanctioned <= 0)
+    if(hasViewOnlyMembership(proj,caller)) return err('FORBIDDEN','View Only project access cannot record utilization.');
+    const records=this.records(proj),record=e.fundingId?records.find(x=>x.id===e.fundingId):records[0];
+    if(e.fundingId&&!record)return err('UNPROCESSABLE','Select a valid funding source for this project.');
+    if (!record||Number(record.sanctioned||0)<=0)
       return err(
         "CONFLICT",
         "Project has no recorded funding allocation (AC-22).",
       );
     const amt = Number(e.amount);
-    if (!e.category || !(amt > 0))
+    if(e.date<proj.startDate) return err('UNPROCESSABLE','Utilization date cannot be earlier than the project start date.');
+    if (!e.category || !String(e.description||'').trim() || !(amt > 0) || !Number.isFinite(amt) || !validISODate(e.date))
       return err(
         "UNPROCESSABLE",
-        "Enter a category and an amount greater than zero (AC-23).",
+        "Enter a category, description, valid date and amount greater than zero (AC-23).",
       );
     proj.funding.utilized += amt;
     proj.utilizations.unshift({
+      id:`UTIL-${proj.id}-${DB.counters.util++}`,
+      fundingId:record.id,
+      fundingSource:record.source,
       category: e.category,
       description: e.description || "",
       amount: amt,
@@ -701,12 +949,14 @@ const FundingService = {
       proj.id,
       `${e.category}: ${fmtMoney(amt)}${e.description ? " — " + e.description : ""}`,
     );
+    this.refreshTotals(proj);
     const pct = this.utilizationPct(proj);
     if (pct >= 80) {
       // FR-025 budget overrun alert
       const msg = `Warning: funding utilization for ${proj.title} (${proj.id}) has reached ${pct}% of the sanctioned budget.`;
-      notify(proj.pi, "funding", msg);
-      notify(caller.id, "funding", msg);
+      const threshold=pct>=100?'over':'approaching',key=`funding-threshold:${proj.id}:${threshold}`;
+      if(!DB.notifications.some(n=>n.key===key&&n.recipient===proj.pi)){notify(proj.pi,"funding",msg,`#/project/${proj.id}`);DB.notifications[0].key=key;}
+      if(caller.id!==proj.pi&&!DB.notifications.some(n=>n.key===key&&n.recipient===caller.id)){notify(caller.id,"funding",msg,`#/project/${proj.id}`);DB.notifications[0].key=key;}
     }
     saveDB();
     return { ok: true, pct };
@@ -721,57 +971,81 @@ const FundingService = {
       );
     const proj = findProject(projectId);
     if (!proj) return err("NOT_FOUND", "Project not found.");
+    if(hasViewOnlyMembership(proj,caller)) return err('FORBIDDEN','View Only project access cannot record disbursements.');
     const amt = Number(e.amount);
-    if (!(amt > 0))
-      return err("UNPROCESSABLE", "Enter an amount greater than zero.");
-    proj.funding.received += amt;
+    if(e.date<proj.startDate) return err('UNPROCESSABLE','Disbursement date cannot be earlier than the project start date.');
+    if (!(amt > 0) || !Number.isFinite(amt) || !validISODate(e.date))
+      return err("UNPROCESSABLE", "Enter a valid date and an amount greater than zero.");
+    const records=this.records(proj),record=e.fundingId?records.find(x=>x.id===e.fundingId):records[0];
+    if(e.fundingId&&!record)return err('UNPROCESSABLE','Select a valid funding source for this project.');
+    if(!record||record.sanctioned<=0)return err('CONFLICT','Select a funding allocation before recording a disbursement.');
+    if(Number(record.received||0)+amt>Number(record.sanctioned||0)) return err('UNPROCESSABLE','Disbursements cannot exceed the sanctioned amount for this funding source.');
+    record.received=Number(record.received||0)+amt;
     proj.disbursements.unshift({
+      id:`DISB-${proj.id}-${DB.counters.disb++}`,
+      fundingId:record.id,
+      fundingSource:record.source,
       amount: amt,
       date: e.date || todayISO(),
       recordedBy: caller.id,
     });
+    this.refreshTotals(proj);
     audit(
       caller.id,
       "FUNDING_DISBURSED",
       proj.id,
       `${fmtMoney(amt)} disbursed`,
     );
-    notify(
-      proj.pi,
-      "funding",
-      `${fmtMoney(amt)} was disbursed to ${proj.title} (${proj.id}) by the funding agency.`,
-    );
+    notifyFundingStakeholders(proj,caller.id,`${fmtMoney(amt)} was disbursed to ${proj.title} (${proj.id}) by the funding agency.`);
     saveDB();
     return { ok: true };
   },
 
-  confirmSanction(projectId, caller) {
+  recordAllocation(projectId, caller, allocation) {
     // UC-005 alt flow b, BR-007
-    if (caller.role !== "FUNDING")
+    if (!['FUNDING','COORDINATOR'].includes(caller.role))
       return err(
         "FORBIDDEN",
-        "Only Funding Agency representatives can confirm sanctions.",
+        "Only an authorized coordinator or funding representative can confirm sanctions.",
       );
     const proj = findProject(projectId);
     if (!proj) return err("NOT_FOUND", "Project not found.");
-    if (proj.status !== "Pending Funding")
+    if(hasViewOnlyMembership(proj,caller)) return err('FORBIDDEN','View Only project access cannot record a funding allocation.');
+    if (!['Pending Funding','Active'].includes(proj.status))
       return err(
         "CONFLICT",
-        "Funding already confirmed or project not awaiting sanction.",
+        "Funding can only be allocated to a project awaiting or receiving funding.",
       );
-    proj.status = "Active";
+    const amount=Number(allocation.amount), authorizedAmount=Number(allocation.authorizedAmount), scheduleDate=allocation.scheduleDate;
+    if(!(amount>0)||!Number.isFinite(amount)||!(authorizedAmount>0)||!Number.isFinite(authorizedAmount)||!validISODate(scheduleDate)) return err('UNPROCESSABLE','Enter a valid authorized amount, sanctioned amount and disbursement schedule date.');
+    if(amount>authorizedAmount)return err('UNPROCESSABLE','The sanctioned amount cannot exceed the amount authorized by this funding source.');
+    if(scheduleDate<proj.startDate) return err('UNPROCESSABLE','Disbursement schedule cannot be earlier than the project start date.');
+    const proposal=findProposal(proj.proposalId);
+    if(!proposal || proposal.status!=='Approved') return err('CONFLICT','Only an approved proposal can receive a funding allocation.');
+    const selected=String(allocation.source||proj.funding.source||proposal.fundingSource||'').trim();
+    const source=selected==='Other'?String(allocation.sourceName||'').trim():selected;
+    const proposalSource=proposal.fundingSource==='Other'?proposal.fundingSourceOther:proposal.fundingSource;
+    if(!source||(!DB.fundingSources.includes(selected)&&source!==proposalSource))return err('UNPROCESSABLE','Choose a valid funding source.');
+    if(selected==='Other'&&!source)return err('UNPROCESSABLE','Enter the custom funding source name.');
+    const records=this.records(proj);
+    const wasPending=proj.status==='Pending Funding';
+    const existing=records.find(r=>String(r.source||'').toLowerCase()===source.toLowerCase());
+    const record=existing||{id:`FUND-${proj.id}-${String(records.length+1).padStart(2,'0')}`,source,proposedAmount:0};
+    const nextSanctioned=Number(record.sanctioned||0)+amount;
+    if(nextSanctioned>authorizedAmount)return err('UNPROCESSABLE','Total sanctioned funding from this source cannot exceed its authorized amount.');
+    Object.assign(record,{source,authorizedAmount,sanctioned:nextSanctioned,received:Number(record.received||0),status:'Confirmed',disbursementSchedule:[...(record.disbursementSchedule||[]),{amount,date:scheduleDate}]});
+    if(!existing)records.push(record);proj.fundingRecords=records;
+    if(wasPending)proj.funding.proposedBudget=Number(proj.funding.proposedBudget||proposal.budget||0);
+    proj.disbursements=proj.disbursements||[];proj.utilizations=proj.utilizations||[];this.refreshTotals(proj);
+    if(wasPending){proj.status="Active";proj.activationDate=todayISO();}
     audit(
       caller.id,
       "FUNDING_SANCTION_CONFIRMED",
       proj.id,
-      "External funding sanction confirmed",
+      `${source}: ${fmtMoney(amount)} sanctioned; first disbursement scheduled ${scheduleDate}`,
     );
-    audit(caller.id, "PROJECT_ACTIVATED", proj.id, "Project is Active");
-    notify(
-      proj.pi,
-      "approval",
-      `Funding for ${proj.title} (${proj.id}) was confirmed by the agency. The project is now Active.`,
-    ); // FR-031
+    if(wasPending)audit(caller.id, "PROJECT_ACTIVATED", proj.id, "Project is Active");
+    notifyFundingStakeholders(proj,caller.id,wasPending?`Funding of ${fmtMoney(amount)} from ${source} for ${proj.title} (${proj.id}) was confirmed. The project is now Active.`:`An additional allocation of ${fmtMoney(amount)} from ${source} was recorded for ${proj.title} (${proj.id}).`);
     saveDB();
     return { ok: true };
   },
@@ -828,6 +1102,7 @@ const AdminService = {
       return err("FORBIDDEN", "Only administrators can change user roles."); // BR-019
     const u = DB.users.find((x) => x.id === userId);
     if (!u) return err("NOT_FOUND", "User not found.");
+    if (!VALID_ROLES.includes(role)) return err("UNPROCESSABLE", "Choose a valid role.");
     u.role = role;
     audit(actor.id, "USER_ROLE_CHANGED", u.id, `Role set to ${role}`);
     saveDB();
@@ -841,6 +1116,7 @@ const AdminService = {
       ); // BR-019
     const u = DB.users.find((x) => x.id === userId);
     if (!u) return err("NOT_FOUND", "User not found.");
+    if (typeof active !== 'boolean') return err("UNPROCESSABLE", "Choose whether the account should be active.");
     u.active = active;
     audit(
       actor.id,

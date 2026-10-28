@@ -59,7 +59,7 @@ function notifList(userId, limit){
   const list = DB.notifications.filter(n=>n.recipient===userId).slice(0, limit||20);
   if(!list.length) return '<p class="empty">No notifications yet.</p>';
   return `<ul class="notif">${list.map(n =>
-    `<li class="${n.read?'':'unread'}"><span class="ntime">${fmtDateTime(n.created)}</span><span>${esc(n.message)}</span></li>`
+    `<li class="${n.read?'':'unread'}"><span class="ntime">${fmtDateTime(n.created)}</span><span>${esc(n.message)}${n.href?` <a class="notif-link" href="${esc(n.href)}">Open details</a>`:''}</span></li>`
   ).join('')}</ul>`;
 }
 function unreadCount(userId){ return DB.notifications.filter(n=>n.recipient===userId && !n.read).length; }
