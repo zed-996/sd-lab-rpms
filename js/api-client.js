@@ -52,6 +52,7 @@ ProjectAccess.revoke=(projectId,_caller,userId)=>apiCommand('project.access.revo
 ProjectService.updateStatus=(projectId,_caller,status,reason)=>apiCommand('project.status',{projectId,status,reason});
 
 ProposalService.saveDraft=(data,_caller,existingId)=>apiCommand('proposal.saveDraft',{data,existingId});
+ProposalService.deleteDraft=(id,_caller)=>apiCommand('proposal.deleteDraft',{id});
 ProposalService.submit=(id,_caller)=>apiCommand('proposal.submit',{id});
 ProposalService.decide=(id,_caller,decision,comments)=>apiCommand('proposal.decide',{id,decision,comments});
 ProposalService.withdraw=(id,_caller)=>apiCommand('proposal.withdraw',{id});

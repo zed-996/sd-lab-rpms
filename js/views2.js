@@ -37,12 +37,13 @@ function viewReviewQueue(_, u){
 
 function viewProposalAssistance(_,u){
   if(!requireRole(u,['COORDINATOR'],'Proposal draft assistance'))return;
-  const drafts=DB.proposals.filter(proposal=>proposal.status==='Draft');
+  const drafts=DB.proposals.filter(proposal=>proposal.status==='Draft'&&!proposal.deletedAt);
   appEl().innerHTML=page('Proposal Drafts','Research Coordinator assistance (user class 11.2, UC-003)',`
     <div class="row-actions"><a class="btn btn-primary" href="#/proposal/new">+ Prepare a draft for a PI</a></div>
     <section class="card"><h2>Draft proposals</h2>${drafts.length?table(['Proposal','Principal Investigator','Last updated','Action'],drafts.map(proposal=>[
-      esc(proposal.title||'Untitled draft'),esc(userById(proposal.pi).name),fmtDate(proposal.lastUpdated),`<a href="#/proposal/${encodeURIComponent(proposal.id)}">Open draft</a>`
+      esc(proposal.title||'Untitled draft'),esc(userById(proposal.pi).name),fmtDate(proposal.lastUpdated),`<a href="#/proposal/${encodeURIComponent(proposal.id)}">Open draft</a> <button type="button" class="btn btn-light btn-sm" data-delete-draft="${esc(proposal.id)}">Delete</button>`
     ])):emptyState('No proposal drafts need assistance.')}</section>`);
+  bindDraftDeleteButtons(u);
 }
 
 /* ---------- Review / Approve / Reject a proposal (UC-005 main, wireframe 06) ---------- */

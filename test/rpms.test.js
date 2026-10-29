@@ -56,6 +56,15 @@ test('funding catalog inserts use the same deterministic IDs referenced by proje
   }
 });
 
+test('soft-deleted proposal marker is written to persisted proposal details',async()=>{
+  const calls=[],deletedAt='2026-10-28T19:05';
+  const proposal={id:'PROP-DELETE-1',pi:'USR-PI',status:'Draft',deletedAt,deletedBy:'USR-PI'};
+  const state={users:[],fundingSources:[],proposals:[proposal],projects:[],milestones:[],documents:[],notifications:[],auditLog:[],counters:{}};
+  await repository.saveState({execute:async(sql,values)=>calls.push({sql,values})},state,{proposals:[{...proposal,deletedAt:undefined}],projects:[],auditLog:[]});
+  const write=calls.find(call=>call.sql.startsWith('INSERT INTO proposals'));
+  assert.ok(write);assert.equal(JSON.parse(write.values.at(-1)).deletedAt,deletedAt);
+});
+
 test('MySQL DATE and DATETIME values round-trip when returned as Date objects',()=>{
   const date=new Date('2026-10-28T16:08:29.000Z');
   assert.equal(repository.isoDate(date),'2026-10-28');
@@ -98,6 +107,39 @@ test('API proposal draft result exposes its ID to the following submit command',
   assert.deepEqual(calls.map(call=>call.url),['/api/commands/proposal.saveDraft','/api/commands/proposal.submit']);
   assert.equal(calls[1].body.id,'PROP-2026-999');
   assert.equal(submitted.proposal.id,'PROP-2026-999');
+});
+
+test('notification and SQL timestamp formats render without Invalid Date',()=>{
+  const storage=new Map(),context={Date,Math,JSON,Number,String,Object,Array,RegExp,Set,Map,localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}};
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../js/store.js'),'utf8'),context,{filename:'js/store.js'});
+  const sqlTimestamp=vm.runInContext("fmtDateTime('2026-10-28 19:05:00')",context);
+  const minuteTimestamp=vm.runInContext("fmtDateTime('2026-10-28T19:05')",context);
+  const dateOnly=vm.runInContext("fmtDate('2026-10-28')",context);
+  const malformed=vm.runInContext("fmtDateTime('not a date')",context);
+  assert.match(sqlTimestamp,/Oct 2026/);assert.doesNotMatch(sqlTimestamp,/Invalid Date/);
+  assert.match(minuteTimestamp,/Oct 2026/);assert.doesNotMatch(minuteTimestamp,/Invalid Date/);
+  assert.equal(dateOnly,'28 Oct 2026');assert.equal(malformed,'—');
+});
+
+test('only an owner PI or coordinator can soft-delete a Draft proposal',()=>{
+  const domain=freshDomain(),state=domain.seed(),pi=state.users.find(user=>user.role==='PI'),otherPI=state.users.find(user=>user.role==='PI'&&user.id!==pi.id),coordinator=state.users.find(user=>user.role==='COORDINATOR');
+  const created=domain.call('proposal.saveDraft',state,pi,{data:validProposal()});
+  const id=created.result.id;
+  const denied=domain.call('proposal.deleteDraft',created.state,otherPI,{id});
+  assert.equal(denied.result.code,'FORBIDDEN');
+  const deleted=domain.call('proposal.deleteDraft',created.state,pi,{id});
+  assert.equal(deleted.result.ok,true);
+  assert.ok(deleted.state.proposals.find(proposal=>proposal.id===id).deletedAt);
+  assert.ok(deleted.state.auditLog.some(entry=>entry.action==='PROPOSAL_DRAFT_DELETED'&&entry.target===id));
+  assert.equal(filteredState(deleted.state,pi).proposals.some(proposal=>proposal.id===id),false);
+  assert.equal(domain.call('proposal.deleteDraft',deleted.state,coordinator,{id}).result.code,'NOT_FOUND');
+  const assisted=domain.call('proposal.saveDraft',deleted.state,coordinator,{data:{...validProposal(),principalInvestigatorId:pi.id}});
+  const coordinatorDelete=domain.call('proposal.deleteDraft',assisted.state,coordinator,{id:assisted.result.id});
+  assert.equal(coordinatorDelete.result.ok,true);
+  const submitted=domain.call('proposal.saveDraft',deleted.state,pi,{data:validProposal()});
+  const underReview=domain.call('proposal.submit',submitted.state,pi,{id:submitted.result.id});
+  assert.equal(domain.call('proposal.deleteDraft',underReview.state,pi,{id:submitted.result.id}).result.code,'CONFLICT');
 });
 
 test('multipart parser preserves binary file bytes and removes path components',()=>{

@@ -118,7 +118,7 @@ function viewDashboard(_, u){
 }
 
 function piDashboard(u){
-  const mine = DB.proposals.filter(p=>p.pi===u.id);
+  const mine = DB.proposals.filter(p=>p.pi===u.id&&!p.deletedAt);
   const drafts = mine.filter(p=>p.status==='Draft').length;
   const underReview = mine.filter(p=>p.status==='Under Review').length;
   const myProjects = DB.projects.filter(x=>x.pi===u.id);
@@ -134,7 +134,7 @@ function piDashboard(u){
     <section class="card"><h2>My Proposals</h2>
       ${mine.length ? table(['Title','Status','Last updated','Action'], mine.map(p=>[
           `<a href="#/proposal/${p.id}">${esc(p.title)}</a>`, pill(p.status), fmtDate(p.lastUpdated),
-          p.status==='Draft' ? `<a href="#/proposal/${p.id}">Edit / Submit</a>` : `<a href="#/proposal/${p.id}">View</a>`
+          p.status==='Draft' ? `<a href="#/proposal/${p.id}">Edit / Submit</a> <button type="button" class="btn btn-light btn-sm" data-delete-draft="${esc(p.id)}">Delete</button>` : `<a href="#/proposal/${p.id}">View</a>`
         ])) : emptyState('No proposals yet — click “+ New Proposal” to start one.')}
     </section>
     <section class="card"><h2>My Active Milestones</h2>
@@ -153,6 +153,7 @@ function piDashboard(u){
       ${notifList(u.id, 4)}
       <a href="#/notifications" class="quiet">View all →</a>
     </section>`);
+  bindDraftDeleteButtons(u);
 }
 
 function adminDashboard(u){
@@ -234,6 +235,7 @@ function renderProposalEditor(u, p, error){
       <div class="row-actions">
         <button class="btn" id="btn-draft">Save Draft</button>
         ${u.role==='PI'?'<button class="btn btn-primary" id="btn-submit">Submit Proposal</button>':'<span class="quiet">The assigned PI must submit this draft for review.</span>'}
+        ${p&&p.status==='Draft'?`<button type="button" class="btn btn-light" data-delete-draft="${esc(p.id)}">Delete Draft</button>`:''}
         <a class="btn btn-light" href="${u.role==='COORDINATOR'?'#/proposal-assistance':'#/dashboard'}">Cancel</a>
       </div>
     </div>`);
@@ -294,6 +296,19 @@ function renderProposalEditor(u, p, error){
     }
     location.hash = '#/confirm/' + res.id;
   };
+  bindDraftDeleteButtons(u);
+}
+
+function bindDraftDeleteButtons(u){
+  document.querySelectorAll('[data-delete-draft]').forEach(button=>button.onclick=()=>{
+    if(!confirm('Delete this draft? Its audit history and uploaded documents will be retained.'))return;
+    const result=ProposalService.deleteDraft(button.dataset.deleteDraft,u);
+    if(!result.ok){toast(result.message,'error');return;}
+    toast('Proposal draft deleted.');
+    if(location.hash.startsWith('#/proposal/'))location.hash=u.role==='COORDINATOR'?'#/proposal-assistance':'#/dashboard';
+    else if(u.role==='COORDINATOR')viewProposalAssistance(null,u);
+    else piDashboard(u);
+  });
 }
 
 function markMissingFields(error){

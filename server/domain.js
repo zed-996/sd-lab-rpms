@@ -22,6 +22,7 @@ function createDomain(projectRoot){
     vm.runInContext('DB=__rpms_state',context);
     const script=({
       'proposal.saveDraft':`ProposalService.saveDraft(__rpms_payload.data,__rpms_actor,__rpms_payload.existingId)`,
+      'proposal.deleteDraft':`ProposalService.deleteDraft(__rpms_payload.id,__rpms_actor)`,
       'proposal.submit':`ProposalService.submit(__rpms_payload.id,__rpms_actor)`,
       'proposal.decide':`ProposalService.decide(__rpms_payload.id,__rpms_actor,__rpms_payload.decision,__rpms_payload.comments,false)`,
       'proposal.withdraw':`ProposalService.withdraw(__rpms_payload.id,__rpms_actor)`,

@@ -504,6 +504,20 @@ const ProposalService = {
     return { ok: true, id: p.id };
   },
 
+  deleteDraft(id, caller) {
+    if(!caller||!caller.active||!['PI','COORDINATOR'].includes(caller.role))
+      return err('FORBIDDEN','Only an active Principal Investigator or Research Coordinator can delete a proposal draft.');
+    const p=DB.proposals.find(proposal=>proposal.id===id);
+    if(!p||p.deletedAt)return err('NOT_FOUND','Proposal draft not found.');
+    if(p.status!=='Draft')return err('CONFLICT','Only proposal drafts can be deleted.');
+    if(caller.role==='PI'&&p.pi!==caller.id)
+      return err('FORBIDDEN','Access denied: only the owning PI can delete this draft.');
+    p.deletedAt=nowISO();p.deletedBy=caller.id;
+    audit(caller.id,'PROPOSAL_DRAFT_DELETED',p.id,'Draft deleted; proposal details and documents are retained for audit/history.');
+    saveDB();
+    return {ok:true,id:p.id};
+  },
+
   submit(id, caller) {
     // UC-004, FR-008
     if(!caller||caller.role!=='PI') return err('FORBIDDEN','Only a Principal Investigator can submit a proposal.');

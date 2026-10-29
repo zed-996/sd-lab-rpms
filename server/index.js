@@ -73,6 +73,9 @@ function accessFor(project,user){
 }
 function filteredState(state,user){
   const out=cleanJson(state);
+  // Draft deletion is a soft delete: keep the database record and audit trail,
+  // but omit it from user-facing application state.
+  out.proposals=out.proposals.filter(p=>!p.deletedAt);
   const visibleProjects=out.projects.filter(p=>canSeeProject(p,user));
   const projectIds=new Set(visibleProjects.map(p=>p.id));
   const ownerProposals=new Set(out.proposals.filter(p=>p.pi===user.id).map(p=>p.id));

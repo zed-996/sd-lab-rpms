@@ -26,11 +26,27 @@ function daysBetween(fromISO, toISO){
 function esc(s){
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-function fmtDate(d){ if(!d) return '—'; const dt=new Date(d.length>10?d+'Z':d+'T00:00:00');
-  return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
-function fmtDateTime(d){ if(!d) return '—'; const dt=new Date(d+':00Z');
+function parseDisplayDate(value){
+  if(!value) return null;
+  if(value instanceof Date) return Number.isNaN(value.getTime())?null:value;
+  const text=String(value).trim();if(!text)return null;
+  let normalized=text;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(text)) normalized=`${text}T00:00:00Z`;
+  else if(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}$/.test(text)) normalized=text.replace(' ','T')+':00Z';
+  else if(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) normalized=text.replace(' ','T')+'Z';
+  else if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) normalized=text+':00Z';
+  const date=new Date(normalized);
+  return Number.isNaN(date.getTime())?null:date;
+}
+function fmtDate(d){
+  const dt=parseDisplayDate(d);if(!dt)return '—';
+  return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
+}
+function fmtDateTime(d){
+  const dt=parseDisplayDate(d);if(!dt)return '—';
   return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+', '+
-         dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); }
+         dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
 function fmtMoney(n){ if(n===null||n===undefined||n==='') return '—';
   return '₹' + Number(n).toLocaleString('en-IN'); }
 function humanSize(bytes){
@@ -40,7 +56,7 @@ function humanSize(bytes){
 }
 
 /* ---------- lookups ---------- */
-function findProposal(id){ return DB.proposals.find(p => p.id === id); }
+function findProposal(id){ return DB.proposals.find(p => p.id === id && !p.deletedAt); }
 function findProject(id){ return DB.projects.find(p => p.id === id); }
 function findMilestone(id){ return DB.milestones.find(m => m.id === id); }
 function userById(id){ return DB.users.find(u => u.id === id) || { name:'Unknown', role:'?' }; }
