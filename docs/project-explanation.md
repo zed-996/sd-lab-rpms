@@ -19,11 +19,11 @@ The application keeps its existing HTML, CSS, and vanilla JavaScript interface. 
 The main directories and files are:
 
 - `index.html` — application shell and frontend script/style references.
-- `css/styles.css` — existing layout, colors, typography, and responsive styling.
-- `js/app.js` — routes, session handling, and screen rendering.
-- `js/views.js`, `js/views2.js` — dashboard, proposal, project, funding, and milestone screens.
-- `js/services.js` — domain workflows, validation, permissions, state transitions, notifications, and audit events.
-- `js/api-client.js` — sends browser operations to the local API.
+- `css/application.css` — existing layout, colors, typography, and responsive styling.
+- `js/app-router.js` — routes, session handling, and screen rendering.
+- `js/views/account-proposal-views.js`, `js/views/project-funding-views.js` — dashboard, proposal, project, funding, and milestone screens.
+- `js/services/application-services.js` — domain workflows, validation, permissions, state transitions, notifications, and audit events.
+- `js/api/browser-api-client.js` — sends browser operations to the local API.
 - `server/index.js` — HTTP API, authentication, authorization, document endpoints, and deadline sweep.
 - `server/domain.js` — maps API commands to existing business services.
 - `server/repository.js` — loads and saves application records in MySQL.

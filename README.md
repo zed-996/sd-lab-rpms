@@ -43,7 +43,7 @@ For production, set `NODE_ENV=production`, use a dedicated MySQL account and pas
 - Multiple project funding sources with separate authorization caps and sanction totals, disbursements, utilization entries, balance summaries and budget alerts.
 - Project and proposal document upload, category, version history and permission-checked download. Uploaded file contents live on the server filesystem; their metadata and associations live in MySQL.
 - Role-filtered notifications, project/funding reports, CSV export and append-only review and audit records.
-- MySQL schema and seed migration in `server/schema.sql`, persistence mapping in `server/repository.js`, API and request authorization in `server/index.js`, and domain operations reused from `js/services.js`.
+- MySQL schema and seed migration in `server/schema.sql`, persistence mapping in `server/repository.js`, API and request authorization in `server/index.js`, and domain operations reused from `js/services/application-services.js`.
 
 ## Tests and traceability
 
